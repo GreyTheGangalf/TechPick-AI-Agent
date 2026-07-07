@@ -1,5 +1,10 @@
+import os
 import requests
 from bs4 import BeautifulSoup
+import psycopg2
+from dotenv import load_dotenv
+
+load_dotenv()
 
 TARGET_URL = "https://www.epey.com/laptop/"
 
@@ -13,14 +18,49 @@ def clean_price(raw_price_str):
     
     try:
         clean_str = raw_price_str.split("TL")[0].strip()
-
-        clean_str = clean_str.replace(".","")
-
-        clean_str = clean_str.replace(",",".")
-
+        clean_str = clean_str.replace(".", "")
+        clean_str = clean_str.replace(",", ".")
         return int(float(clean_str))
-    except Exception as e:
+    except Exception:
         return 0
+
+def save_to_database(devices):
+    print("\nConnecting to Database...")
+    conn = None
+    inserted_count = 0
+    try:
+        conn = psycopg2.connect(
+            host=os.getenv("DB_HOST"),
+            port=os.getenv("DB_PORT"),
+            database=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD")
+        )
+        cursor = conn.cursor()
+
+        cursor.execute("TRUNCATE TABLE raw_laptops RESTART IDENTITY;")
+
+        insert_query = """
+            INSERT INTO raw_laptops (brand, model, price) 
+            VALUES (%s, %s, %s)
+        """
+        
+        for device in devices:
+            cursor.execute(insert_query, (device["brand"], device["model"], device["price"]))
+            inserted_count += 1
+
+        conn.commit()
+        print(f"Success! {inserted_count} devices have been added to the database.")
+
+    except Exception as e:
+        print(f"Database error: {e}")
+        if conn:
+            conn.rollback() 
+    finally:
+        if conn:
+            cursor.close()
+            conn.close()
+            print("The database connection has been safely closed.")
 
 def scrape_laptops():
     print("Connecting to the target site...")
@@ -30,11 +70,7 @@ def scrape_laptops():
         print("Connection successful! Scanning products...\n")
         
         soup = BeautifulSoup(response.content, "html.parser")
-        
         products = soup.find_all("ul", class_="metin row")
-
-        print(f"A total of {len(products)} product cards were found.\n")
-        print("=" * 40)
 
         cleaned_devices = []
         
@@ -54,15 +90,14 @@ def scrape_laptops():
                         "model": laptop_name,
                         "price": numeric_price
                     })
-                    
-                    print(f"Model: {laptop_name}")
-                    print(f"Price: {raw_price}")
-                    print("-" * 40)
 
-            except Exception as e:
-                print(f"A device was skipped, error: {e}")
+            except Exception:
                 continue
-        print(f"\nTotal number of sellable devices successfully cleaned: {len(cleaned_devices)}")
+                
+        print(f"Total number of sellable devices successfully cleaned: {len(cleaned_devices)}")
+        
+        save_to_database(cleaned_devices)
+        
     else:
         print(f"Connection Error! Status: {response.status_code}")
 
